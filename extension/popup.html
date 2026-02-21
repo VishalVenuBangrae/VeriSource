@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Source Credibility</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <h1 class="title">AI Source Credibility</h1>
+    <div class="card">
+      <div class="label">Service</div>
+      <div id="service-name" class="value">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Tab URL</div>
+      <div id="tab-url" class="value url" title="">—</div>
+    </div>
+    <div id="status" class="status">—</div>
+    <p id="refresh-hint" class="refresh-hint hidden">Refresh the ChatGPT tab, then open the popup again so the extension can detect the page and capture citations.</p>
+    <div id="citations-section" class="citations-section hidden">
+      <div class="label">Citations (from last answer)</div>
+      <div id="citations-count" class="value">0 sources</div>
+      <ul id="citations-list" class="citations-list"></ul>
+      <button type="button" id="copy-json-btn" class="copy-json-btn">Copy JSON</button>
+      <span id="copy-json-feedback" class="copy-feedback hidden">Copied!</span>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
