@@ -79,7 +79,7 @@
     if (service) {
       setStatus('fallback', 'Fallback mode — refresh this tab');
       document.getElementById('refresh-hint').classList.remove('hidden');
-      if (service === 'chatgpt' && tab.id) {
+      if ((service === 'chatgpt' || service === 'claude') && tab.id) {
         chrome.tabs.sendMessage(tab.id, { type: 'GET_CITATIONS' }, (citeRes) => {
           renderCitations(service, (citeRes && citeRes.sources) ? citeRes.sources : []);
         });
@@ -108,8 +108,8 @@
     const listEl = document.getElementById('citations-list');
     const copyBtn = document.getElementById('copy-json-btn');
     const copyFeedback = document.getElementById('copy-json-feedback');
-    const isChatGPT = service === 'chatgpt';
-    if (!isChatGPT || !section || !countEl || !listEl) {
+    const hasCitations = service === 'chatgpt' || service === 'claude';
+    if (!hasCitations || !section || !countEl || !listEl) {
       if (section) section.classList.add('hidden');
       return;
     }

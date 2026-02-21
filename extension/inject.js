@@ -1,9 +1,9 @@
 /**
- * Injected into page (MAIN world) on ChatGPT to intercept the conversation stream.
- * Wraps fetch, tees the response body, parses SSE for content_references / sources_footnote,
- * and dispatches a custom event with extracted citations so the content script can receive them.
+ * Injected into page (MAIN world) on ChatGPT and Claude to intercept conversation/completion streams.
+ * Parses SSE for citations and dispatches via postMessage so the content script can receive them.
  *
- * Target: POST https://chatgpt.com/backend-api/f/conversation (and chat.openai.com)
+ * ChatGPT: POST .../backend-api/.../conversation -> sources_footnote / content_references
+ * Claude:  POST ...claude.ai/.../completion     -> citation_start_delta + tool_result knowledge array
  */
 
 (function () {
@@ -25,10 +25,7 @@
     return (options && options.method) ? String(options.method).toUpperCase() : 'GET';
   }
 
-  /**
-   * Recursively find source-like arrays in the stream payload (sources_footnote or content_references items).
-   * Returns an array of { url, title, attribution? }.
-   */
+  // ----- ChatGPT: extract from sources_footnote / content_references -----
   function extractSourcesFromPayload(obj, found) {
     if (!obj || typeof obj !== 'object') return;
     if (Array.isArray(obj)) {
@@ -49,35 +46,83 @@
     for (const key of Object.keys(obj)) extractSourcesFromPayload(obj[key], found);
   }
 
-  /**
-   * Parse SSE-style chunks: split by double newline, then "data: " lines as JSON.
-   */
-  function parseSSEChunk(buffer, decoder) {
-    const text = buffer ? decoder.decode(buffer, { stream: true }) : '';
-    return text;
-  }
-
-  /**
-   * Process a full data line (after "data: "). Parse JSON and extract any sources.
-   */
-  function processDataLine(line, collected) {
+  function processDataLineChatGPT(line, collected) {
     const trimmed = line.trim();
     if (!trimmed || trimmed === '[DONE]') return;
     try {
       const data = JSON.parse(trimmed);
       extractSourcesFromPayload(data, collected);
-    } catch (_) {
-      /* ignore parse errors */
-    }
+    } catch (_) {}
+  }
+
+  // ----- Claude: extract from citation_start_delta and tool_result partial_json -----
+  function createClaudeProcessor() {
+    let jsonBuffer = '';
+    return function processDataLineClaude(line, collected) {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      try {
+        const data = JSON.parse(trimmed);
+        if (data.type === 'content_block_delta' && data.delta) {
+          const d = data.delta;
+          if (d.citation) {
+            const c = d.citation;
+            const url = c.url || (c.sources && c.sources[0] && c.sources[0].url);
+            if (url) {
+              const attribution = (c.metadata && c.metadata.site_name) || (c.sources && c.sources[0] && c.sources[0].source) || '';
+              collected.push({ url, title: c.title || '', attribution });
+            }
+          }
+          if (d.partial_json) {
+            jsonBuffer += d.partial_json;
+            try {
+              const parsed = JSON.parse(jsonBuffer);
+              if (Array.isArray(parsed)) {
+                for (const item of parsed) {
+                  if (item && typeof item.url === 'string') {
+                    const meta = item.metadata || {};
+                    collected.push({
+                      url: item.url,
+                      title: item.title || '',
+                      attribution: meta.site_name || meta.site_domain || '',
+                    });
+                  }
+                }
+                jsonBuffer = '';
+              }
+            } catch (_) {}
+          }
+        }
+        if (data.type === 'content_block_stop' && jsonBuffer) {
+          try {
+            const parsed = JSON.parse(jsonBuffer);
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                if (item && typeof item.url === 'string') {
+                  const meta = item.metadata || {};
+                  collected.push({
+                    url: item.url,
+                    title: item.title || '',
+                    attribution: meta.site_name || meta.site_domain || '',
+                  });
+                }
+              }
+            }
+          } catch (_) {}
+          jsonBuffer = '';
+        }
+      } catch (_) {}
+    };
   }
 
   /**
-   * Consume the second tee'd stream, accumulate SSE, extract sources, dispatch when done.
+   * Consume stream, parse SSE, extract sources with platform-specific parser, dispatch when done.
    */
-  function consumeStream(stream, decoder) {
+  function consumeStream(stream, decoder, platform) {
     const reader = stream.getReader();
     let buffer = '';
     const collected = [];
+    const processDataLine = platform === 'claude' ? createClaudeProcessor() : processDataLineChatGPT;
 
     function processBuffer() {
       let idx;
@@ -126,12 +171,15 @@
     const url = getRequestUrl(input, init);
     const method = getRequestMethod(input, init);
 
-    const isConversation = url && url.includes(CONVERSATION_PATH) && url.includes(CONVERSATION_SUBPATH) && method === 'POST';
-    if (!isConversation) {
+    const isChatGPT = url && url.includes(CONVERSATION_PATH) && url.includes(CONVERSATION_SUBPATH) && method === 'POST';
+    const isClaude = url && url.includes('claude.ai') && url.includes('/completion') && method === 'POST';
+
+    if (!isChatGPT && !isClaude) {
       return originalFetch.apply(this, arguments);
     }
 
-    if (DEBUG) console.log('[AI Source Credibility] Intercepting conversation request:', url);
+    const platform = isClaude ? 'claude' : 'chatgpt';
+    if (DEBUG) console.log('[AI Source Credibility] Intercepting', platform, 'request:', url);
 
     return originalFetch.apply(this, arguments).then((response) => {
       if (!response.ok || !response.body) return response;
@@ -145,7 +193,7 @@
       const stream1 = tee[0];
       const stream2 = tee[1];
       const decoder = new TextDecoder();
-      consumeStream(stream2, decoder);
+      consumeStream(stream2, decoder, platform);
 
       return new Response(stream1, {
         status: response.status,
